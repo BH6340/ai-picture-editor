@@ -26,6 +26,8 @@ dist/
 # 运行时数据
 .data/
 *.log
+logs/
+backend/logs/
 
 # AI 智能体协作文件（本地使用，不入库）
 Agent.md
