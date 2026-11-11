@@ -1,0 +1,75 @@
+# ============================================================
+# 开发环境全容器化配置（可选）
+#
+# 使用方式：
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+#
+# 注意：
+# - 这是可选方案，适合想纯 Docker 开发的场景
+# - 开发阶段推荐本地跑代码 + Docker 只跑中间件（性能更好、调试更方便）
+# - 代码目录通过 volume 挂载到容器内，修改代码会自动热重载
+# ============================================================
+
+services:
+  # 后端 API 服务
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: python-base  # 只构建后端部分，不包含前端构建
+    command: uvicorn app.main:app --reload --host 0.0.0.0 --port 7302
+    ports:
+      - "7302:7302"
+    env_file: backend/.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://retouch:retouch_dev@postgres:5432/retouch
+      REDIS_URL: redis://redis:6379
+      S3_ENDPOINT: http://minio:9000
+      S3_PUBLIC_ENDPOINT: http://localhost:7313
+    volumes:
+      - ./backend:/app/backend
+      - cv_models:/root/.u2net
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      minio: { condition: service_healthy }
+
+  # 后端 Worker 服务（ARQ 异步任务队列）
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: python-base
+    command: arq app.worker.WorkerSettings
+    env_file: backend/.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://retouch:retouch_dev@postgres:5432/retouch
+      REDIS_URL: redis://redis:6379
+      S3_ENDPOINT: http://minio:9000
+      S3_PUBLIC_ENDPOINT: http://localhost:7313
+    volumes:
+      - ./backend:/app/backend
+      - cv_models:/root/.u2net
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      minio: { condition: service_healthy }
+
+  # 前端开发服务器
+  frontend:
+    image: node:20-alpine
+    working_dir: /app
+    command: sh -c "npm install && npm run dev"
+    ports:
+      - "7301:7301"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    environment:
+      - VITE_HOST=0.0.0.0
+      - VITE_PORT=7301
+    depends_on:
+      - api
+
+volumes:
+  cv_models:
