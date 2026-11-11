@@ -27,6 +27,10 @@ dist/
 .data/
 *.log
 
+# AI 智能体协作文件（本地使用，不入库）
+Agent.md
+.trae/
+
 # 系统与编辑器
 .DS_Store
 .idea/
