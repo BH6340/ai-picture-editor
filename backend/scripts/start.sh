@@ -6,11 +6,15 @@
 
 set -e
 
-# 脚本所在目录（backend/）
+# 脚本所在目录（backend/scripts/）
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BACKEND_DIR="$(dirname "$SCRIPT_DIR")"
+PROJECT_DIR="$(dirname "$BACKEND_DIR")"
 LOG_DIR="$BACKEND_DIR/logs"
 PID_DIR="$BACKEND_DIR/logs"
+# .env 文件在项目根目录（config.py 从项目根目录读取）
+ENV_FILE="$PROJECT_DIR/.env"
+ENV_EXAMPLE="$PROJECT_DIR/.env.example"
 
 # 颜色输出
 RED='\033[0;31m'
@@ -36,11 +40,11 @@ if ! command -v uv &> /dev/null; then
     exit 1
 fi
 
-# 检查 .env 文件
-if [ ! -f ".env" ]; then
+# 检查 .env 文件（在项目根目录）
+if [ ! -f "$ENV_FILE" ]; then
     echo -e "${YELLOW}⚠️  .env 文件不存在，正在从 .env.example 复制...${NC}"
-    if [ -f ".env.example" ]; then
-        cp .env.example .env
+    if [ -f "$ENV_EXAMPLE" ]; then
+        cp "$ENV_EXAMPLE" "$ENV_FILE"
         echo -e "${GREEN}✅ 已创建 .env 文件（默认 mock 模式）${NC}"
     else
         echo -e "${RED}❌ .env.example 也不存在，请手动创建 .env${NC}"

@@ -105,10 +105,15 @@ echo "────────────────────────�
 
 cd "$PROJECT_DIR/backend"
 
-# 检查 .env
-if [ ! -f ".env" ]; then
+# 检查 .env（在项目根目录，config.py 从那里读取）
+ENV_FILE="$PROJECT_DIR/.env"
+ENV_EXAMPLE="$PROJECT_DIR/.env.example"
+if [ ! -f "$ENV_FILE" ]; then
     echo -e "${YELLOW}⚠️  .env 文件不存在，正在从 .env.example 复制...${NC}"
-    cp .env.example .env 2>/dev/null || true
+    if [ -f "$ENV_EXAMPLE" ]; then
+        cp "$ENV_EXAMPLE" "$ENV_FILE"
+        echo -e "${GREEN}✅ 已创建 .env 文件（默认 mock 模式）${NC}"
+    fi
 fi
 
 # 检查虚拟环境
