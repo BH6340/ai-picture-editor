@@ -178,7 +178,7 @@ echo "╚═══════════════════════�
 echo -e "${NC}"
 echo ""
 echo "🌐 前端地址：    http://localhost:7301"
-echo "🔧 API 地址：    http://localhost:7302"
+echo "🔧 API 地址：    http://localhost:7302/api/docs"
 echo "💓 健康检查：    http://localhost:7302/api/health"
 echo "🗄  MinIO 控制台： http://localhost:7314"
 echo "   账号：retouch / 密码：retouch_dev"
