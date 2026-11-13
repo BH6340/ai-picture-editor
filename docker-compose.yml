@@ -1,95 +1,252 @@
+# ============================================================
+# AI 修图智能体 - Docker Compose 编排文件
+# ============================================================
+#
+# 【三种使用模式】
+# 1. 开发模式（默认）：只启动中间件（PostgreSQL / Redis / MinIO）
+#    命令：docker compose up -d
+#    适用：本地开发，代码跑在宿主机上
+#
+# 2. 全容器开发模式：启动全部服务（含前后端），代码通过 volume 挂载
+#    命令：docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+#    适用：不想在本地装环境，纯 Docker 开发
+#
+# 3. 生产部署模式：启动全部服务（含前后端），代码打包在镜像内
+#    命令：docker compose --profile deploy up -d
+#    适用：部署到服务器
+#
+# 【服务端口速查】
+# PostgreSQL: 7311 (宿主) → 5432 (容器)
+# Redis:      7312 (宿主) → 6379 (容器)
+# MinIO API:  7313 (宿主) → 9000 (容器)
+# MinIO 控制台: 7314 (宿主) → 9001 (容器)
+# API 服务:   7302 (宿主) → 7302 (容器) [deploy profile]
+# 前端开发:   7301 (宿主) → 7301 (容器) [dev compose]
+# ============================================================
+
+# 项目名称（所有容器、网络、卷都会带这个前缀）
 name: ai-retouch-agent
 
 services:
+  # ----------------------------------------------------------
+  # PostgreSQL - 业务主数据库
+  # ----------------------------------------------------------
+  # 存储用户、会话、消息、任务等所有业务数据
   postgres:
+    # 使用的镜像：PostgreSQL 17，alpine 变体（体积更小、更安全）
+    # alpine 是基于 Alpine Linux 的精简版，比标准镜像小一半以上
     image: postgres:17-alpine
+
+    # 重启策略：unless-stopped
+    #   no          - 不自动重启（默认）
+    #   always      - 总是自动重启（包括手动 stop 后再 start）
+    #   unless-stopped - 除了手动 stop 外，其他情况都自动重启（推荐）
+    #   on-failure  - 只有失败退出时才重启
     restart: unless-stopped
+
+    # 端口映射："宿主端口:容器端口"
+    # 宿主端口用 7311 而不是默认的 5432，避免和本地已有的 PostgreSQL 冲突
     ports:
       - "7311:5432"
+
+    # 环境变量：PostgreSQL 初始化用，首次启动时创建用户和数据库
+    # 注意：只有第一次启动（数据卷为空）时生效，之后改这些变量不会生效
     environment:
-      POSTGRES_USER: retouch
-      POSTGRES_PASSWORD: retouch_dev
-      POSTGRES_DB: retouch
+      POSTGRES_USER: retouch          # 数据库用户名
+      POSTGRES_PASSWORD: retouch_dev  # 数据库密码（开发环境，生产请改强密码）
+      POSTGRES_DB: retouch            # 自动创建的数据库名
+
+    # 数据卷挂载：命名卷 pg_data → 容器内的数据目录
+    # 用命名卷（不是 bind mount）的原因：
+    #   1. 性能更好（Docker 管理，Linux 原生文件系统）
+    #   2. 不依赖宿主目录结构
+    #   3. 便于备份和迁移
+    #   4. 权限问题更少
     volumes:
       - pg_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U retouch -d retouch"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
 
+    # 健康检查：Docker 定期检查容器是否正常工作
+    # depends_on 的 condition: service_healthy 依赖这个检查结果
+    healthcheck:
+      # 检查命令：用 pg_isready 工具测试数据库是否可连接
+      # CMD-SHELL 表示通过 shell 执行命令
+      test: ["CMD-SHELL", "pg_isready -U retouch -d retouch"]
+      interval: 5s        # 每 5 秒检查一次
+      timeout: 3s         # 单次检查超时时间
+      retries: 10         # 连续失败 10 次才标记为 unhealthy
+      # start_period: 15s  # 启动缓冲期（容器刚启动时不计数，给启动留时间）
+      # （PostgreSQL 启动快，这里没设，需要的话可以加）
+
+  # ----------------------------------------------------------
+  # Redis - 缓存与消息队列
+  # ----------------------------------------------------------
+  # 作用：
+  #   1. ARQ 异步任务队列的存储后端（类似 Celery + Redis）
+  #   2. SSE 实时推送的消息广播
+  #   3. 可扩展为缓存层
   redis:
+    # Redis 7，alpine 变体
     image: redis:7-alpine
+
     restart: unless-stopped
+
+    # 端口映射：7312 → 6379
+    # 宿主端口用 7312，避免和本地 Redis 冲突
     ports:
       - "7312:6379"
+
+    # 数据持久化：Redis 默认会做 RDB 快照，存在 /data 目录
     volumes:
       - redis_data:/data
+
+    # 健康检查：用 redis-cli ping，返回 PONG 说明正常
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 3s
       retries: 10
 
+  # ----------------------------------------------------------
+  # MinIO - 对象存储（S3 兼容）
+  # ----------------------------------------------------------
+  # 作用：存储用户上传的原图、生成的结果图、缩略图等
+  # 为什么用 MinIO 而不是本地文件系统？
+  #   1. S3 协议兼容，生产环境可以无缝切换到阿里云 OSS / AWS S3
+  #   2. 支持签名 URL、生命周期管理、权限控制等高级功能
+  #   3. 自带 Web 控制台，方便查看和管理文件
   minio:
+    # MinIO 镜像（pgsty/minio 是国内镜像源，拉取更快）
     image: pgsty/minio:latest
+
     restart: unless-stopped
+
+    # 覆盖默认启动命令
+    #   server /data         - 以服务器模式启动，数据存在 /data
+    #   --console-address ":9001" - Web 控制台监听 9001 端口
+    # 默认情况下 MinIO API 用 9000 端口，控制台用随机端口，这里显式指定
     command: server /data --console-address ":9001"
+
+    # 两个端口：
+    #   7313 → 9000  - S3 API 端口（程序访问用）
+    #   7314 → 9001  - Web 控制台端口（浏览器访问用）
     ports:
       - "7313:9000"
       - "7314:9001"
+
+    # 管理员账号密码（开发环境）
+    # 生产环境务必改成强密码
     environment:
-      MINIO_ROOT_USER: retouch
-      MINIO_ROOT_PASSWORD: retouch_dev
+      MINIO_ROOT_USER: retouch         # 管理员账号
+      MINIO_ROOT_PASSWORD: retouch_dev  # 管理员密码
+
+    # 数据持久化
     volumes:
       - minio_data:/data
+
+    # 健康检查：用 mc（MinIO Client）检查本地存储是否就绪
     healthcheck:
       test: ["CMD", "mc", "ready", "local"]
       interval: 5s
       timeout: 3s
       retries: 10
 
-  # 以下两个仅在部署时启用：docker compose --profile deploy up -d
+  # ============================================================
+  # 以下服务仅在 deploy profile 下启动（生产部署用）
+  # 启用方式：docker compose --profile deploy up -d
+  # ============================================================
+
+  # ----------------------------------------------------------
+  # app - 后端 API 服务（FastAPI + Uvicorn）
+  # ----------------------------------------------------------
   app:
+    # 归属于 deploy profile，默认不启动
     profiles: ["deploy"]
+
+    # 从当前目录的 Dockerfile 构建镜像
     build: .
+
     restart: unless-stopped
+
+    # 启动命令：Uvicorn ASGI 服务器
+    #   app.main:app  - 入口模块:FastAPI 实例
+    #   --host 0.0.0.0 - 监听所有网络接口（容器内必须，否则外部访问不到）
+    #   --port 7302  - 监听端口
     command: uvicorn app.main:app --host 0.0.0.0 --port 7302
+
     ports:
       - "7302:7302"
+
+    # 从 .env 文件批量加载环境变量
     env_file: .env
+
+    # 单独覆盖/补充环境变量
+    # 注意：数据库地址用的是服务名 postgres，不是 localhost！
+    #   原因：Docker Compose 内部有 DNS，服务名就是域名，可以直接解析到对应容器的 IP
+    #   如果写 localhost，容器会访问自己内部的 5432，当然连不上
     environment:
       DATABASE_URL: postgresql+asyncpg://retouch:retouch_dev@postgres:5432/retouch
       REDIS_URL: redis://redis:6379
-      S3_ENDPOINT: http://minio:9000
-      S3_PUBLIC_ENDPOINT: http://localhost:7313
+      S3_ENDPOINT: http://minio:9000          # 容器内部访问 MinIO 用服务名
+      S3_PUBLIC_ENDPOINT: http://localhost:7313  # 浏览器访问用 localhost:宿主端口
+
+    # 共享 cv_models 卷：存储 U2Net 等 AI 模型文件
+    # 多个容器共用同一个卷，避免重复下载
     volumes:
       - cv_models:/root/.u2net
+
+    # 依赖关系：等这三个服务都健康了再启动
+    # condition: service_healthy 表示等健康检查通过，而不是等容器启动完
+    # （容器启动了不代表服务可用，数据库可能还在初始化）
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
       minio: { condition: service_healthy }
 
+  # ----------------------------------------------------------
+  # worker - ARQ 异步任务 Worker
+  # ----------------------------------------------------------
+  # 作用：处理耗时的 AI 图片生成/编辑任务，避免阻塞 API
+  # 对比 ICube：相当于 Django + Celery 的 Worker
   worker:
     profiles: ["deploy"]
+
+    # 和 app 共用同一个 Dockerfile、同一个镜像
+    # 因为代码是一样的，只是启动命令不同
     build: .
+
     restart: unless-stopped
+
+    # 启动命令：ARQ Worker
     command: arq app.worker.WorkerSettings
+
+    # 不需要暴露端口，Worker 只从 Redis 取任务
+    # ports:
+
     env_file: .env
+
     environment:
       DATABASE_URL: postgresql+asyncpg://retouch:retouch_dev@postgres:5432/retouch
       REDIS_URL: redis://redis:6379
       S3_ENDPOINT: http://minio:9000
       S3_PUBLIC_ENDPOINT: http://localhost:7313
+
     volumes:
       - cv_models:/root/.u2net
+
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
       minio: { condition: service_healthy }
 
+# ============================================================
+# 数据卷定义（命名卷）
+# ============================================================
+# 这些卷由 Docker 管理，数据不会因为容器删除而丢失
+# 查看卷：docker volume ls
+# 查看详情：docker volume inspect ai-retouch-agent_pg_data
+# 备份方法：docker run --rm -v ai-retouch-agent_pg_data:/data -v $(pwd):/backup alpine tar czf /backup/pg_backup.tar.gz /data
 volumes:
-  pg_data:
-  redis_data:
-  minio_data:
-  cv_models:
+  pg_data:        # PostgreSQL 数据
+  redis_data:     # Redis 持久化数据
+  minio_data:     # MinIO 对象存储数据
+  cv_models:      # CV 模型文件（U2Net 等，多个容器共用）

@@ -1,8 +1,27 @@
 # ============================================================
 # 开发环境全容器化配置（可选）
+# ============================================================
 #
-# 使用方式：
+# 【这是什么？】
+# 这是主 docker-compose.yml 的补充文件，用 Compose 的多文件合并机制
+# 在主配置基础上，增加 api / worker / frontend 三个开发用的服务
+#
+# 【为什么不直接写在主文件里？】
+# 1. 职责分离：主文件管中间件（生产也用），dev 文件管开发环境
+# 2. 默认不加载：开发者可以选择用不用全容器开发
+# 3. 灵活组合：可以和其他 compose 文件组合使用
+#
+# 【使用方式】
 #   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+#
+# 【Compose 多文件合并规则】
+# - 服务名相同会合并（后者覆盖/补充前者）
+# - 服务名不同会新增
+# - volumes、networks 同理
+#
+# 【和 deploy profile 的区别】
+#   deploy profile:  生产用，代码打在镜像里，不需要源码
+#   dev compose:     开发用，代码通过 volume 挂载进去，改代码自动热重载
 #
 # 注意：
 # - 这是可选方案，适合想纯 Docker 开发的场景
@@ -11,63 +30,116 @@
 # ============================================================
 
 services:
-  # 后端 API 服务
+  # ----------------------------------------------------------
+  # api - 后端 API 服务（开发模式）
+  # ----------------------------------------------------------
+  # 和 deploy profile 里的 app 服务类似，但有几个关键区别：
+  #   1. target: python-base - 只构建到 Python 阶段，不构建前端
+  #      （前端单独跑一个 dev server，热更新更快）
+  #   2. --reload - 开启热重载，改 Python 代码自动重启
+  #   3. ./backend:/app/backend - 绑定挂载，本地代码实时同步到容器
   api:
     build:
-      context: .
+      context: .           # 构建上下文（Dockerfile 所在目录）
       dockerfile: Dockerfile
-      target: python-base  # 只构建后端部分，不包含前端构建
+      target: python-base  # 多阶段构建的目标阶段，只构建到 Python 运行时
+
+    # 开发模式启动命令：加了 --reload
+    # --reload 会监听文件变化，自动重启服务（开发调试必备）
     command: uvicorn app.main:app --reload --host 0.0.0.0 --port 7302
+
     ports:
       - "7302:7302"
+
+    # 注意：这里读的是 backend/.env（开发环境）
+    # deploy profile 读的是项目根目录的 .env
     env_file: backend/.env
+
     environment:
       DATABASE_URL: postgresql+asyncpg://retouch:retouch_dev@postgres:5432/retouch
       REDIS_URL: redis://redis:6379
       S3_ENDPOINT: http://minio:9000
       S3_PUBLIC_ENDPOINT: http://localhost:7313
+
     volumes:
+      # 绑定挂载：本地 backend 目录 → 容器内 /app/backend
+      # 这样改本地代码，容器里能实时看到，配合 --reload 自动重启
       - ./backend:/app/backend
+      # 共享模型卷
       - cv_models:/root/.u2net
+
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
       minio: { condition: service_healthy }
 
-  # 后端 Worker 服务（ARQ 异步任务队列）
+  # ----------------------------------------------------------
+  # worker - ARQ 异步任务 Worker（开发模式）
+  # ----------------------------------------------------------
   worker:
     build:
       context: .
       dockerfile: Dockerfile
       target: python-base
+
     command: arq app.worker.WorkerSettings
+
     env_file: backend/.env
+
     environment:
       DATABASE_URL: postgresql+asyncpg://retouch:retouch_dev@postgres:5432/retouch
       REDIS_URL: redis://redis:6379
       S3_ENDPOINT: http://minio:9000
       S3_PUBLIC_ENDPOINT: http://localhost:7313
+
     volumes:
       - ./backend:/app/backend
       - cv_models:/root/.u2net
+
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
       minio: { condition: service_healthy }
 
-  # 前端开发服务器
+  # ----------------------------------------------------------
+  # frontend - 前端开发服务器（Vite Dev Server）
+  # ----------------------------------------------------------
+  # 开发模式下前端单独跑，用 Vite 的热模块替换（HMR）
+  # 改前端代码浏览器自动刷新，体验最好
   frontend:
+    # 直接用 node:20-alpine 镜像，不构建
     image: node:20-alpine
+
+    # 工作目录
     working_dir: /app
+
+    # 启动命令：先装依赖，再启动开发服务器
+    # 为什么要每次 npm install？
+    #   因为 node_modules 是匿名卷，第一次启动需要装
+    #   之后只要 package.json 没变，node_modules 还在卷里
     command: sh -c "npm install && npm run dev"
+
     ports:
       - "7301:7301"
+
     volumes:
+      # 绑定挂载：本地 frontend 目录 → 容器内 /app
+      # 改本地代码，容器里实时生效
       - ./frontend:/app
+      # 匿名卷：node_modules 单独挂一个卷
+      # 【为什么要单独挂 node_modules？】
+      #   如果不单独挂，./frontend:/app 会把整个 /app 覆盖
+      #   包括容器内已经装好的 node_modules
+      #   单独声明一个匿名卷，node_modules 不会被宿主机的覆盖
+      #   这是 Docker 开发环境的经典技巧
       - /app/node_modules
+
     environment:
-      - VITE_HOST=0.0.0.0
-      - VITE_PORT=7301
+      - VITE_HOST=0.0.0.0     # Vite 监听所有地址，容器内必须
+      - VITE_PORT=7301        # Vite 端口
+
+    # 前端依赖 API，等 API 启动再启动
+    # （注意：这里用的是简单依赖，不是健康检查依赖）
     depends_on:
       - api
 
