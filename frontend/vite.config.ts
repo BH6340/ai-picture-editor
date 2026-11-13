@@ -10,8 +10,9 @@ export default defineConfig({
     alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) },
   },
   server: {
-    // 显式绑定 IPv4 回环，否则 Vite 只监听 ::1，127.0.0.1 直连会被拒绝
-    host: '127.0.0.1',
+    // 绑定所有地址，WSL 开发时 Windows 浏览器才能访问
+    // 原生 Linux/macOS 开发可用 '127.0.0.1' 更安全（仅本机访问）
+    host: '0.0.0.0',
     port: 7301,
     strictPort: true,
     proxy: {
