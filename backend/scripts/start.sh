@@ -2,6 +2,8 @@
 # ============================================================
 # 后端一键启动脚本（API + Worker，后台运行）
 # 使用方式：./scripts/start.sh
+# 环境变量：
+#   ACCESS_HOST  - 访问地址的主机名（默认 localhost，WSL 环境传 WSL IP）
 # ============================================================
 
 set -e
@@ -108,9 +110,13 @@ echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}  所有后端服务启动完成！${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo ""
-echo "🌐 前端地址：    http://localhost:7301"
-echo "📖 API 文档：   http://localhost:7302/api/docs"
-echo "💓 健康检查：  http://localhost:7302/api/health"
+
+# 访问地址主机（支持从外部传入，WSL 环境用 IP）
+HOST="${ACCESS_HOST:-localhost}"
+
+echo "🌐 前端地址：    http://${HOST}:7301"
+echo "📖 API 文档：   http://${HOST}:7302/api/docs"
+echo "💓 健康检查：  http://${HOST}:7302/api/health"
 echo ""
 echo "📄 查看 API 日志：    tail -f logs/api.log"
 echo "📄 查看 Worker 日志： tail -f logs/worker.log"

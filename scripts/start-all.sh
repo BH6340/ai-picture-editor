@@ -2,6 +2,8 @@
 # ============================================================
 # 全栈一键启动脚本（Docker 中间件 + 后端 API + Worker + 前端）
 # 使用方式：./scripts/start-all.sh
+# 环境变量：
+#   SKIP_WSL_IP=1  - 跳过 WSL IP 自动检测更新
 # ============================================================
 
 set -e
@@ -16,6 +18,7 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
+PURPLE='\033[0;35m'
 NC='\033[0m'
 
 echo -e "${BLUE}"
@@ -27,6 +30,31 @@ echo ""
 
 cd "$PROJECT_DIR"
 mkdir -p "$LOG_DIR"
+
+# ==================== 第 0 步：WSL IP 检测 ====================
+echo -e "${PURPLE}【0/4】WSL 环境检测${NC}"
+echo "─────────────────────────────────────────────"
+
+# 默认访问地址（非 WSL 环境）
+ACCESS_HOST="localhost"
+
+# 调用 WSL IP 更新脚本
+if [ -f "$SCRIPT_DIR/update-wsl-ip.sh" ]; then
+    # 捕获输出，提取 WSL_IP
+    WSL_OUTPUT=$(bash "$SCRIPT_DIR/update-wsl-ip.sh" 2>&1 || true)
+    echo "$WSL_OUTPUT"
+
+    # 从输出中提取 WSL_IP
+    WSL_IP=$(echo "$WSL_OUTPUT" | grep -oP 'WSL_IP=\K[0-9.]+' || true)
+    if [ -n "$WSL_IP" ]; then
+        ACCESS_HOST="$WSL_IP"
+        echo -e "${GREEN}✅ WSL 模式，访问地址将使用 ${ACCESS_HOST}${NC}"
+    fi
+else
+    echo "ℹ️  update-wsl-ip.sh 不存在，跳过 WSL 检测"
+fi
+
+echo ""
 
 # ==================== 第一步：启动 Docker 中间件 ====================
 echo -e "${GREEN}【1/4】启动 Docker 中间件（PostgreSQL + Redis + MinIO）${NC}"
@@ -42,7 +70,7 @@ fi
 if ! docker info &> /dev/null 2>&1; then
     echo -e "${YELLOW}⚠️  Docker daemon 未运行，正在尝试启动...${NC}"
     # 尝试 systemctl（云服务器）
-    if command -v systemctl &> /dev/null && systemctl list-unit-files | grep -q docker; then
+    if command -v systemctl &> /dev/null && systemctl list-unit-files 2>/dev/null | grep -q docker; then
         sudo systemctl start docker
     # 尝试 service（WSL）
     elif command -v service &> /dev/null && [ -f /etc/init.d/docker ]; then
@@ -133,7 +161,8 @@ echo -e "${GREEN}【3/4】启动后端服务（API + Worker）${NC}"
 echo "─────────────────────────────────────────────"
 
 cd "$PROJECT_DIR/backend"
-bash scripts/start.sh
+# 传递 ACCESS_HOST 给后端脚本，让它显示正确的地址
+ACCESS_HOST="$ACCESS_HOST" bash scripts/start.sh
 
 echo ""
 
@@ -177,13 +206,20 @@ echo "║   🎉 所有服务启动完成！                  ║"
 echo "╚══════════════════════════════════════════╝"
 echo -e "${NC}"
 echo ""
-echo "🌐 前端地址：    http://localhost:7301"
-echo "📖 API 文档：    http://localhost:7302/api/docs"
-echo "💓 健康检查：    http://localhost:7302/api/health"
-echo "🗄  MinIO 控制台： http://localhost:7314"
+echo "🌐 前端地址：    http://${ACCESS_HOST}:7301"
+echo "📖 API 文档：    http://${ACCESS_HOST}:7302/api/docs"
+echo "💓 健康检查：    http://${ACCESS_HOST}:7302/api/health"
+echo "🗄  MinIO 控制台： http://${ACCESS_HOST}:7314"
 echo "   账号：retouch / 密码：retouch_dev"
 echo ""
 echo "📄 日志目录：    $LOG_DIR"
 echo ""
+
+if [ "$ACCESS_HOST" != "localhost" ]; then
+    echo -e "${YELLOW}💡 提示：当前为 WSL 环境，使用 IP 地址访问。${NC}"
+    echo -e "${YELLOW}   如遇 localhost 无法访问，是 WSL 网络限制，属正常现象。${NC}"
+    echo ""
+fi
+
 echo "⏹  停止所有服务： ./scripts/stop-all.sh"
 echo ""
